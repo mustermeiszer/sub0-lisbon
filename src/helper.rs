@@ -48,6 +48,7 @@ pub async fn query_disk_builder_polkadot(
 	path: PathBuf,
 ) -> StandaloneBuilder<polkadot_core_primitives::Block, polkadot_runtime::RuntimeApi, RCidp, RDp> {
 	let mut disk_db = DiskDb::new(path);
+	disk_db.no_state_pruning();
 	let init = fudge::initiator::default_with(Handle::current(), disk_db);
 	StandaloneBuilder::new(init, cidp_and_dp_relay)
 }
@@ -404,4 +405,8 @@ pub struct TestEnv {
 // helper for logging stuff
 pub fn log(log: impl Debug) {
 	tracing::event!(tracing::Level::INFO, "DEBUGGING: {:?}", log);
+}
+
+pub fn log_empty() {
+	tracing::event!(tracing::Level::INFO, "DEBUGGING:");
 }

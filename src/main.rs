@@ -25,7 +25,7 @@ use pallet_vesting::VestingInfo;
 use polkadot_core_primitives::AccountId;
 use sp_runtime::{generic::BlockId, MultiAddress, Storage};
 
-use crate::helper::{log, CENTRIFUGE_ID, DUMMY_ID};
+use crate::helper::{log, log_empty, CENTRIFUGE_ID, DUMMY_ID};
 
 mod helper;
 
@@ -160,81 +160,87 @@ async fn main() {
 	}
 	 */
 
-	// 3. Query real Polkadot database
-	//    a. Retrieve 1 block
-	//       - show balances
-	//       - show vestings
+	// 3. Query real database
+	//    a. Retrieve latest block
+	//       - show council
 	/*
 	{
-		const REAL_DB: &'static str = "/Volumes/Ext/sub0/relay/chains/polkadot";
+		const REAL_DB: &'static str = "/Volumes/Ext/sub0/relay-chain/chains/polkadot/db/full";
 		let builder = helper::query_disk_builder_polkadot(PathBuf::from(REAL_DB)).await;
-		let (accounts, vestings) = builder
-			.with_state_at(BlockId::Number(1), || {
-				let mut accounts = Vec::new();
-				for (pub_key, data) in frame_system::Account::<polkadot_runtime::Runtime>::iter() {
-					accounts.push((pub_key, data))
-				}
-
-				let mut vestings = Vec::new();
-				for (pub_key, data) in Vesting::<polkadot_runtime::Runtime>::iter() {
-					vestings.push((pub_key, data))
-				}
-
-				(accounts, vestings)
-			})
-			.unwrap();
-		log(accounts);
-		log(vestings);
+		let (prime, council) = builder.with_state(|| get_council_info()).unwrap();
+		log(prime);
+		council.into_iter().for_each(|member| log(member));
 	}
 	 */
 
-	//    b. Mutate latest block
-	//       - Log my
+	//    b. Retrieve block of
+	//       Centrifuge with old vestings
+	/*
+	{
+		const REAL_DB: &'static str = "/Volumes/Ext/sub0/chains/centrifuge/db/full";
+		let builder = helper::query_disk_builder_centrifuge(PathBuf::from(REAL_DB)).await;
+		let vestings = builder
+			.with_state_at(BlockId::Number(500000), || {
+				let mut vestings = Vec::new();
+				for (count, (pub_key, data)) in
+					pallet_vesting::Vesting::<polkadot_runtime::Runtime>::iter().enumerate()
+				{
+					if count < 20 {
+						vestings.push((pub_key, data))
+					} else {
+						break;
+					}
+				}
+
+				vestings
+			})
+			.unwrap();
+
+		log("Vestings at Block 500000:");
+		vestings
+			.into_iter()
+			.for_each(|(counter, vesting)| log(vesting));
+
+		let vestings = builder
+			.with_state(|| {
+				let mut vestings = Vec::new();
+				for (count, (pub_key, data)) in
+					pallet_vesting::Vesting::<polkadot_runtime::Runtime>::iter().enumerate()
+				{
+					if count < 20 {
+						vestings.push((pub_key, data))
+					} else {
+						break;
+					}
+				}
+
+				vestings
+			})
+			.unwrap();
+
+		log("Vestings at latest block:");
+		vestings
+			.into_iter()
+			.for_each(|(counter, vesting)| log(vesting));
+	}
+	*/
+
+	//    c. Mutate latest block
 	//       - Change the prime council member
 	//       - Log the new council members
 	//       - Log the new prime member
 	/*
 	{
-		//const REAL_DB: &'static str = "/Volumes/Ext/sub0/relay/chains/polkadot";
-		//let mut builder = helper::query_disk_builder_polkadot(PathBuf::from(REAL_DB)).await;
-		let mut builder = helper::query_disk_builder_polkadot(helper::polkadot_db_path()).await;
+		const REAL_DB: &'static str = "/Volumes/Ext/sub0/relay-chain/chains/polkadot/db/full";
+		let mut builder = helper::query_disk_builder_polkadot(PathBuf::from(REAL_DB)).await;
 		{
-			let (prime, council) = builder
-				.with_state(|| {
-					let mut council = Vec::new();
-					pallet_collective::Members::<
-						polkadot_runtime::Runtime,
-						pallet_collective::Instance1,
-					>::get()
-					.into_iter()
-					.for_each(|member| {
-						let display =
-							pallet_identity::Pallet::<polkadot_runtime::Runtime>::identity(member)
-								.map(|registration| match registration.info.display {
-									pallet_identity::Data::Raw(bytes) => {
-										String::from_utf8(bytes.into())
-											.unwrap_or(String::from("UNKNOWN"))
-									}
-									_ => String::from("UNKNOWN"),
-								})
-								.unwrap_or(String::from("UNKNOWN"));
-
-						council.push(display);
-					});
-
-					let prime = pallet_collective::Pallet::<
-						polkadot_runtime::Runtime,
-						pallet_collective::Instance1,
-					>::prime();
-					(prime, council)
-				})
-				.unwrap();
+			let (prime, council) = builder.with_state(|| get_council_info()).unwrap();
 			log(prime);
 			council.into_iter().for_each(|member| log(member));
 		}
-
+		log_empty();
 		log("Mutating storage now..");
-
+		log_empty();
 		{
 			builder
 				.with_mut_state(|| {
@@ -254,40 +260,11 @@ async fn main() {
 				})
 				.unwrap();
 		}
-
+		log_empty();
 		log("Fetching storage after mutation:");
-
+		log_empty();
 		{
-			let (prime, council) = builder
-				.with_state(|| {
-					let mut council = Vec::new();
-					pallet_collective::Members::<
-						polkadot_runtime::Runtime,
-						pallet_collective::Instance1,
-					>::get()
-					.into_iter()
-					.for_each(|member| {
-						let display =
-							pallet_identity::Pallet::<polkadot_runtime::Runtime>::identity(member)
-								.map(|registration| match registration.info.display {
-									pallet_identity::Data::Raw(bytes) => {
-										String::from_utf8(bytes.into())
-											.unwrap_or(String::from("UNKNWON"))
-									}
-									_ => String::from("UNKNOWN"),
-								})
-								.unwrap_or(String::from("UNKNOWN"));
-
-						council.push(display);
-					});
-
-					let prime = pallet_collective::Pallet::<
-						polkadot_runtime::Runtime,
-						pallet_collective::Instance1,
-					>::prime();
-					(prime, council)
-				})
-				.unwrap();
+			let (prime, council) = builder.with_state(|| get_council_info()).unwrap();
 			log(prime);
 			council.into_iter().for_each(|member| log(member));
 		}
@@ -354,3 +331,38 @@ pub type Vesting<T: pallet_vesting::Config> = StorageMap<
 	T::AccountId,
 	VestingInfo<BalanceOf<T>, T::BlockNumber>,
 >;
+
+/// Retrieves Council and Prime
+fn get_council_info() -> (Option<String>, Vec<String>) {
+	let mut council = Vec::new();
+	pallet_collective::Members::<polkadot_runtime::Runtime, pallet_collective::Instance1>::get()
+		.into_iter()
+		.for_each(|member| council.push(get_display_name(member)));
+
+	let prime =
+		pallet_collective::Pallet::<polkadot_runtime::Runtime, pallet_collective::Instance1>::prime().map(|prime| get_display_name(prime));
+
+	(prime, council)
+}
+
+fn get_display_name(member: AccountId) -> String {
+	pallet_identity::Pallet::<polkadot_runtime::Runtime>::identity(member.clone())
+		.map(|registration| registration.info.display)
+		.or_else(|| {
+			pallet_identity::Pallet::<polkadot_runtime::Runtime>::super_of(member).map(
+				|(super_acc, _)| {
+					pallet_identity::Pallet::<polkadot_runtime::Runtime>::identity(super_acc)
+						.unwrap()
+						.info
+						.display
+				},
+			)
+		})
+		.map(|display| match display {
+			pallet_identity::Data::Raw(bytes) => {
+				String::from_utf8(bytes.into()).unwrap_or(String::from("UNKNOWN"))
+			}
+			_ => String::from("UNKNOWN"),
+		})
+		.unwrap_or(String::from("UNKNOWN"))
+}
