@@ -345,6 +345,8 @@ fn get_council_info() -> (Option<String>, Vec<String>) {
 	(prime, council)
 }
 
+/// Retrieve the display name for an account, if possible, from the
+/// identity pallet.
 fn get_display_name(member: AccountId) -> String {
 	pallet_identity::Pallet::<polkadot_runtime::Runtime>::identity(member.clone())
 		.map(|registration| registration.info.display)
