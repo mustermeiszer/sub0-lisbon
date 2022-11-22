@@ -11,12 +11,15 @@
 
 use std::{fmt::Debug, path::PathBuf, sync::Arc};
 
+use frame_support::traits::GenesisBuild;
 use fudge::{
-	backend::MemDb,
+	backend::{DiskDb, MemDb},
 	digest::{DigestCreator, DigestProvider, FudgeAuraDigest, FudgeBabeDigest},
 	inherent::{
 		FudgeDummyInherentRelayParachain, FudgeInherentParaParachain, FudgeInherentTimestamp,
 	},
+	primitives::ParaId,
+	state::StateProvider,
 	BackendProvider, ParachainBuilder, RelaychainBuilder, StandaloneBuilder, TWasmExecutor,
 };
 use sc_service::{TFullBackend, TFullClient};
@@ -41,17 +44,30 @@ pub fn polkadot_db_path() -> PathBuf {
 	path
 }
 
+pub async fn query_disk_builder_polkadot(
+	path: PathBuf,
+) -> StandaloneBuilder<polkadot_core_primitives::Block, polkadot_runtime::RuntimeApi, RCidp, RDp> {
+	let mut disk_db = DiskDb::new(path);
+	let init = fudge::initiator::default_with(Handle::current(), disk_db);
+	StandaloneBuilder::new(init, cidp_and_dp_relay)
+}
+
+pub async fn query_disk_builder_centrifuge(
+	path: PathBuf,
+) -> StandaloneBuilder<centrifuge_runtime::Block, centrifuge_runtime::RuntimeApi, EmptyCidp, EmptyDp>
+{
+	let init = fudge::initiator::default_with(Handle::current(), DiskDb::new(path));
+	let cidp: EmptyCidp = Box::new(move |_, _| async move { Ok(()) });
+	let dp: EmptyDp = Box::new(move |_, _| async move { Ok(sp_runtime::Digest::default()) });
+	StandaloneBuilder::new(init, |_| (cidp, dp))
+}
+
 /// Get Standalone mem-db builder
 ///
 /// This builder uses the Polkadot runtime
 pub async fn default_in_mem(
 	genesis: impl BuildStorage + 'static,
-) -> StandaloneBuilder<
-	polkadot_core_primitives::Block,
-	polkadot_runtime::RuntimeApi,
-	impl CreateInherentDataProviders<polkadot_core_primitives::Block, ()>,
-	impl DigestCreator<polkadot_core_primitives::Block>,
-> {
+) -> StandaloneBuilder<polkadot_core_primitives::Block, polkadot_runtime::RuntimeApi, RCidp, RDp> {
 	let mut init = fudge::initiator::default_with(Handle::current(), MemDb::new());
 	init.with_genesis(Box::new(genesis));
 
@@ -62,10 +78,7 @@ fn cidp_and_dp_relay(
 	client: Arc<
 		TFullClient<polkadot_core_primitives::Block, polkadot_runtime::RuntimeApi, TWasmExecutor>,
 	>,
-) -> (
-	impl CreateInherentDataProviders<polkadot_core_primitives::Block, ()>,
-	impl DigestCreator<polkadot_core_primitives::Block>,
-) {
+) -> (RCidp, RDp) {
 	// Init timestamp instance_id
 	let instance_id =
 		FudgeInherentTimestamp::create_instance(sp_std::time::Duration::from_secs(6), None);
@@ -73,7 +86,7 @@ fn cidp_and_dp_relay(
 	let cidp = move |clone_client: Arc<
 		TFullClient<polkadot_core_primitives::Block, polkadot_runtime::RuntimeApi, TWasmExecutor>,
 	>| {
-		move |parent: H256, ()| {
+		Box::new(move |parent: H256, ()| {
 			let client = clone_client.clone();
 			let parent_header = client
 				.header(&BlockId::Hash(parent.clone()))
@@ -94,19 +107,19 @@ fn cidp_and_dp_relay(
                     );
 
 				let relay_para_inherent = FudgeDummyInherentRelayParachain::new(parent_header);
-				Ok((timestamp, uncles, slot, relay_para_inherent))
+				Ok((timestamp, slot, uncles, relay_para_inherent))
 			}
-		}
+		})
 	};
 
-	let dp = move |parent, inherents| async move {
+	let dp = Box::new(move |parent, inherents| async move {
 		let mut digest = sp_runtime::Digest::default();
 
 		let babe = FudgeBabeDigest::<polkadot_core_primitives::Block>::new();
 		babe.append_digest(&mut digest, &parent, &inherents).await?;
 
 		Ok(digest)
-	};
+	});
 
 	(cidp(client), dp)
 }
@@ -121,8 +134,8 @@ pub async fn polkadot_builder(
 	polkadot_core_primitives::Block,
 	polkadot_runtime::RuntimeApi,
 	polkadot_runtime::Runtime,
-	impl CreateInherentDataProviders<polkadot_core_primitives::Block, ()>,
-	impl DigestCreator<polkadot_core_primitives::Block>,
+	RCidp,
+	RDp,
 > {
 	let mut init = fudge::initiator::default_with(Handle::current(), db);
 	if let Some(genesis) = genesis {
@@ -143,12 +156,7 @@ pub async fn centrifuge_builder(
 		Backend = TFullBackend<centrifuge_runtime::Block>,
 	>,
 	genesis: Option<impl BuildStorage + 'static>,
-) -> ParachainBuilder<
-	centrifuge_runtime::Block,
-	centrifuge_runtime::RuntimeApi,
-	impl CreateInherentDataProviders<centrifuge_runtime::Block, ()>,
-	impl DigestCreator<centrifuge_runtime::Block>,
-> {
+) -> ParachainBuilder<centrifuge_runtime::Block, centrifuge_runtime::RuntimeApi, CfgCidp, CfgDp> {
 	let mut init = fudge::initiator::default_with(Handle::current(), db);
 	if let Some(genesis) = genesis {
 		init.with_genesis(Box::new(genesis));
@@ -158,7 +166,7 @@ pub async fn centrifuge_builder(
 	let instance_id_para =
 		FudgeInherentTimestamp::create_instance(sp_std::time::Duration::from_secs(12), None);
 
-	let cidp = move |_parent: H256, ()| {
+	let cidp: CfgCidp = Box::new(move |_parent: H256, ()| {
 		let inherent_builder_clone = inherent_builder.clone();
 		async move {
 			let timestamp = FudgeInherentTimestamp::get_instance(instance_id_para)
@@ -167,18 +175,18 @@ pub async fn centrifuge_builder(
 			let slot =
 				sp_consensus_aura::inherents::InherentDataProvider::from_timestamp_and_slot_duration(
 					timestamp.current_time(),
-					SlotDuration::from_millis(std::time::Duration::from_secs(6).as_millis() as u64),
+					SlotDuration::from_millis(std::time::Duration::from_secs(12).as_millis() as u64),
 				);
 			let inherent = inherent_builder_clone.parachain_inherent().await.unwrap();
 			let relay_para_inherent = FudgeInherentParaParachain::new(inherent);
 			Ok((timestamp, slot, relay_para_inherent))
 		}
-	};
+	});
 
-	let dp = |clone_client: Arc<
+	let dp: fn(Arc<_>) -> CfgDp = |clone_client: Arc<
 		TFullClient<centrifuge_runtime::Block, centrifuge_runtime::RuntimeApi, TWasmExecutor>,
 	>| {
-		move |parent, inherents| {
+		Box::new(move |parent, inherents| {
 			let client = clone_client.clone();
 
 			async move {
@@ -194,7 +202,7 @@ pub async fn centrifuge_builder(
 				let digest = aura.build_digest(&parent, &inherents).await?;
 				Ok(digest)
 			}
-		}
+		})
 	};
 
 	ParachainBuilder::new(init, |client| (cidp, dp(client)))
@@ -208,12 +216,7 @@ async fn dummy_builder(
 	>,
 	db: impl BackendProvider<test_parachain::Block, Backend = TFullBackend<test_parachain::Block>>,
 	genesis: Option<impl BuildStorage + 'static>,
-) -> ParachainBuilder<
-	test_parachain::Block,
-	test_parachain::RuntimeApi,
-	impl CreateInherentDataProviders<test_parachain::Block, ()>,
-	impl DigestCreator<test_parachain::Block>,
-> {
+) -> ParachainBuilder<test_parachain::Block, test_parachain::RuntimeApi, DummyCidp, DummyDp> {
 	let mut init = fudge::initiator::default_with(Handle::current(), db);
 	if let Some(genesis) = genesis {
 		init.with_genesis(Box::new(genesis));
@@ -223,7 +226,7 @@ async fn dummy_builder(
 	let instance_id_para =
 		FudgeInherentTimestamp::create_instance(sp_std::time::Duration::from_secs(12), None);
 
-	let cidp = move |_parent: H256, ()| {
+	let cidp: DummyCidp = Box::new(move |_parent: H256, ()| {
 		let inherent_builder_clone = inherent_builder.clone();
 		async move {
 			let timestamp = FudgeInherentTimestamp::get_instance(instance_id_para)
@@ -232,18 +235,18 @@ async fn dummy_builder(
 			let slot =
 				sp_consensus_aura::inherents::InherentDataProvider::from_timestamp_and_slot_duration(
 					timestamp.current_time(),
-					SlotDuration::from_millis(std::time::Duration::from_secs(6).as_millis() as u64),
+					SlotDuration::from_millis(std::time::Duration::from_secs(12).as_millis() as u64),
 				);
 			let inherent = inherent_builder_clone.parachain_inherent().await.unwrap();
 			let relay_para_inherent = FudgeInherentParaParachain::new(inherent);
 			Ok((timestamp, slot, relay_para_inherent))
 		}
-	};
+	});
 
-	let dp = |clone_client: Arc<
+	let dp: fn(Arc<_>) -> DummyDp = |clone_client: Arc<
 		TFullClient<test_parachain::Block, test_parachain::RuntimeApi, TWasmExecutor>,
 	>| {
-		move |parent, inherents| {
+		Box::new(move |parent, inherents| {
 			let client = clone_client.clone();
 
 			async move {
@@ -255,7 +258,7 @@ async fn dummy_builder(
 				let digest = aura.build_digest(&parent, &inherents).await?;
 				Ok(digest)
 			}
-		}
+		})
 	};
 
 	ParachainBuilder::new(init, |client| (cidp, dp(client)))
@@ -263,9 +266,81 @@ async fn dummy_builder(
 
 // setup for a companion environment with centrifuge chain from databases
 pub async fn test_env() -> TestEnv {
-	todo!()
+	let relay = {
+		let mut state = StateProvider::new(polkadot_runtime::WASM_BINARY.unwrap());
+		state.insert_storage(polkadot_runtime_parachains::configuration::GenesisConfig::<
+			polkadot_runtime::Runtime,
+		>::default().build_storage().unwrap());
+
+		polkadot_builder(DiskDb::new(polkadot_db_path()), Some(state)).await
+	};
+	let dummy_para = {
+		let inherent_builder = relay.inherent_builder(ParaId::from(DUMMY_ID));
+		let mut state = StateProvider::new(test_parachain::WASM_BINARY.unwrap());
+		state.insert_storage(
+			pallet_aura::GenesisConfig::<centrifuge_runtime::Runtime> {
+				authorities: vec![test_parachain::AuraId::from(sp_core::sr25519::Public(
+					[0u8; 32],
+				))],
+			}
+			.build_storage()
+			.unwrap(),
+		);
+
+		dummy_builder(inherent_builder, MemDb::new(), Some(state)).await
+	};
+	let centrifuge_para = {
+		let inherent_builder = relay.inherent_builder(ParaId::from(CENTRIFUGE_ID));
+		let mut state = StateProvider::new(centrifuge_runtime::WASM_BINARY.unwrap());
+		state.insert_storage(
+			pallet_aura::GenesisConfig::<centrifuge_runtime::Runtime> {
+				authorities: vec![centrifuge_runtime::AuraId::from(sp_core::sr25519::Public(
+					[0u8; 32],
+				))],
+			}
+			.build_storage()
+			.unwrap(),
+		);
+
+		centrifuge_builder(
+			inherent_builder,
+			DiskDb::new(centrifuge_db_path()),
+			Some(state),
+		)
+		.await
+	};
+
+	TestEnv::new(relay, dummy_para, centrifuge_para).unwrap()
 }
 
+// setup for a companion environment with in memory databases from genesis
+pub async fn test_env_in_mem() -> TestEnv {
+	let relay = {
+		let mut state = StateProvider::new(polkadot_runtime::WASM_BINARY.unwrap());
+		state.insert_storage(polkadot_runtime_parachains::configuration::GenesisConfig::<
+			polkadot_runtime::Runtime,
+		>::default().build_storage().unwrap());
+
+		polkadot_builder(MemDb::new(), Some(state)).await
+	};
+	let dummy_para = {
+		let inherent_builder = relay.inherent_builder(ParaId::from(DUMMY_ID));
+		let mut state = StateProvider::new(test_parachain::WASM_BINARY.unwrap());
+
+		dummy_builder(inherent_builder, MemDb::new(), Some(state)).await
+	};
+	let centrifuge_para = {
+		let inherent_builder = relay.inherent_builder(ParaId::from(CENTRIFUGE_ID));
+		let mut state = StateProvider::new(centrifuge_runtime::WASM_BINARY.unwrap());
+
+		centrifuge_builder(inherent_builder, MemDb::new(), Some(state)).await
+	};
+
+	TestEnv::new(relay, dummy_para, centrifuge_para).unwrap()
+}
+type EmptyCidp =
+	Box<dyn CreateInherentDataProviders<centrifuge_runtime::Block, (), InherentDataProviders = ()>>;
+type EmptyDp = Box<dyn DigestCreator<centrifuge_runtime::Block> + Send + Sync>;
 type RCidp = Box<
 	dyn CreateInherentDataProviders<
 		polkadot_core_primitives::Block,
@@ -303,16 +378,21 @@ type DummyCidp = Box<
 >;
 type DummyDp = Box<dyn DigestCreator<test_parachain::Block> + Send + Sync>;
 type RDp = Box<dyn DigestCreator<polkadot_core_primitives::Block> + Send + Sync>;
+type Genesis = Option<sp_runtime::Storage>;
+
+pub const DUMMY_ID: u32 = 2999u32;
+pub const CENTRIFUGE_ID: u32 = 2031u32;
 
 #[fudge::companion]
 pub struct TestEnv {
-	#[fudge::parachain(2999u32)]
-	dummy: ParachainBuilder<test_parachain::Block, test_parachain::RuntimeApi, DummyCidp, DummyDp>,
-	#[fudge::parachain(2031u32)]
-	centrifuge:
+	#[fudge::parachain(DUMMY_ID)]
+	pub dummy:
+		ParachainBuilder<test_parachain::Block, test_parachain::RuntimeApi, DummyCidp, DummyDp>,
+	#[fudge::parachain(CENTRIFUGE_ID)]
+	pub centrifuge:
 		ParachainBuilder<centrifuge_runtime::Block, centrifuge_runtime::RuntimeApi, CfgCidp, CfgDp>,
 	#[fudge::relaychain]
-	polkadot: RelaychainBuilder<
+	pub polkadot: RelaychainBuilder<
 		polkadot_core_primitives::Block,
 		polkadot_runtime::RuntimeApi,
 		polkadot_runtime::Runtime,
@@ -323,5 +403,5 @@ pub struct TestEnv {
 
 // helper for logging stuff
 pub fn log(log: impl Debug) {
-	tracing::event!(tracing::Level::INFO, "Sub0 - Lisbon: DEBUGGING: {:?}", log);
+	tracing::event!(tracing::Level::INFO, "DEBUGGING: {:?}", log);
 }
