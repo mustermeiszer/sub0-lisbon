@@ -35,7 +35,7 @@ async fn main() {
 
 	// 1. Start in memory default standalone
 	//    a Without genesis
-	/* PANICS
+	/*
 	let builder = helper::default_in_mem(Storage::default()).await;
 	 */
 
@@ -45,77 +45,79 @@ async fn main() {
 	//        - insert some funding
 	/*
 	{
-	let genesis = StateProvider::new(polkadot_runtime::WASM_BINARY.unwrap());
-	let mut builder = helper::default_in_mem(genesis).await;
+		let genesis = StateProvider::new(polkadot_runtime::WASM_BINARY.unwrap());
+		let mut builder = helper::default_in_mem(genesis).await;
 
-	builder.build_block();
-	builder.import_block();
+		builder.build_block();
+		builder.import_block();
 
-	builder.build_block();
-	builder.import_block();
+		builder.build_block();
+		builder.import_block();
 
-	let past = builder
-		.with_state_at(BlockId::Number(1), || {
-			frame_system::Pallet::<polkadot_runtime::Runtime>::block_number()
-		})
-		.unwrap();
-	log(past);
+		let past = builder
+			.with_state_at(BlockId::Number(1), || {
+				frame_system::Pallet::<polkadot_runtime::Runtime>::block_number()
+			})
+			.unwrap();
+		log(past);
 
-	let curr = builder
-		.with_state(|| frame_system::Pallet::<polkadot_runtime::Runtime>::block_number())
-		.unwrap();
-	log(curr);
+		let curr = builder
+			.with_state(|| frame_system::Pallet::<polkadot_runtime::Runtime>::block_number())
+			.unwrap();
+		log(curr);
 
-	let account = builder
-		.with_state(|| {
-			frame_system::Pallet::<polkadot_runtime::Runtime>::account(AccountId::new(
-				MUSTERMEISZER,
-			))
-		})
-		.unwrap();
-	log(account);
+		let account = builder
+			.with_state(|| {
+				frame_system::Pallet::<polkadot_runtime::Runtime>::account(AccountId::new(
+					MUSTERMEISZER,
+				))
+			})
+			.unwrap();
+		log(account);
 
-	/*
-	builder
-		.with_state(|| {
-			let mut account = frame_system::Pallet::<polkadot_runtime::Runtime>::account(
-				as_account(MUSTERMEISZER),
-			);
+		/*
+		// Does NOT mutate state
+		builder
+			.with_state(|| {
+				let mut account = frame_system::Pallet::<polkadot_runtime::Runtime>::account(
+					as_account(MUSTERMEISZER),
+				);
 
-			account.data.free = 10000000000;
+				account.data.free = 10000000000;
 
-			frame_system::Account::<polkadot_runtime::Runtime>::set(
-				as_account(MUSTERMEISZER),
-				account,
-			);
-		})
-		.unwrap();
+				frame_system::Account::<polkadot_runtime::Runtime>::set(
+					as_account(MUSTERMEISZER),
+					account,
+				);
+			})
+			.unwrap();
+		}
+		 */
+
+		builder
+			.with_mut_state(|| {
+				let mut account = frame_system::Pallet::<polkadot_runtime::Runtime>::account(
+					as_account(MUSTERMEISZER),
+				);
+
+				account.data.free = 10000000000;
+
+				frame_system::Account::<polkadot_runtime::Runtime>::set(
+					as_account(MUSTERMEISZER),
+					account,
+				);
+			})
+			.unwrap();
+
+		let account = builder
+			.with_state(|| {
+				frame_system::Pallet::<polkadot_runtime::Runtime>::account(AccountId::new(
+					MUSTERMEISZER,
+				))
+			})
+			.unwrap();
+		log(account);
 	}
-	 */
-
-	builder
-		.with_mut_state(|| {
-			let mut account = frame_system::Pallet::<polkadot_runtime::Runtime>::account(
-				as_account(MUSTERMEISZER),
-			);
-
-			account.data.free = 10000000000;
-
-			frame_system::Account::<polkadot_runtime::Runtime>::set(
-				as_account(MUSTERMEISZER),
-				account,
-			);
-		})
-		.unwrap();
-
-	let account = builder
-		.with_state(|| {
-			frame_system::Pallet::<polkadot_runtime::Runtime>::account(AccountId::new(
-				MUSTERMEISZER,
-			))
-		})
-		.unwrap();
-	log(account);
 	*/
 
 	// 2. Build a block with the disk TestEnv with logs
@@ -276,12 +278,31 @@ async fn main() {
 	//       - show changed outcome
 	/*
 	{
-		let mut builder = helper::default_in_mem().await;
-		builder.with_mut_state(|| {
-			frame_system::Pallet::<polkadot_runtime::Runtime>::set_storage(polkadot_runtime::Origin::root(), Vec::new(), None);
-		}).unwrap();
+		let genesis = StateProvider::new(polkadot_runtime::WASM_BINARY.unwrap());
+		let mut builder = helper::default_in_mem(genesis).await;
+		builder
+			.with_mut_state(|| {
+				frame_system::Pallet::<polkadot_runtime::Runtime>::set_storage(
+					polkadot_runtime::Origin::root(),
+					vec![(
+						sp_storage::well_known_keys::CODE.to_vec(),
+						centrifuge_runtime::WASM_BINARY.unwrap().to_vec(),
+					)],
+				)
+				.unwrap();
+			})
+			.unwrap();
+
+		let new_code = builder
+			.with_state(|| {
+				frame_support::storage::unhashed::get_raw(sp_storage::well_known_keys::CODE)
+					.unwrap()
+			})
+			.unwrap();
+
+		assert_eq!(new_code, centrifuge_runtime::WASM_BINARY.unwrap().to_vec());
 	}
-	 */
+	*/
 }
 
 /// Gavin's verified polkadot account - sub for council:
